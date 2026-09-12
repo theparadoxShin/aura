@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AURA — Air Quality Sentinel</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:        #f9f9f7;
+    --surface:     #fcfcfb;
+    --ink:         #0b0b0b;
+    --ink-2:       #52514e;
+    --muted:       #898781;
+    --hairline:    #e1e0d9;
+    --border:      rgba(11,11,11,0.10);
+    --series-1:    #2a78d6;
+    --good:        #0ca30c;
+    --warning:     #fab219;
+    --serious:     #ec835a;
+    --critical:    #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page:      #0d0d0d;
+      --surface:   #1a1a19;
+      --ink:       #ffffff;
+      --ink-2:     #c3c2b7;
+      --muted:     #898781;
+      --hairline:  #2c2c2a;
+      --border:    rgba(255,255,255,0.10);
+      --series-1:  #3987e5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto;
+    max-width: 900px;
+    background: var(--page);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 16px;
+  }
+  header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { font-size: 1.1rem; margin: 0; font-weight: 650; letter-spacing: 0.04em; }
+  .tagline { font-size: 0.78rem; color: var(--muted); }
+  .spacer { flex: 1; }
+  .pill {
+    font-size: 0.72rem; color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.ok .dot { background: var(--good); }
+  .pill.ko .dot { background: var(--critical); }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+  .card + .card, .tiles, section { margin-top: 12px; }
+  .tiles + .card { margin-top: 12px; }
+  .card h2 {
+    font-size: 0.8rem; font-weight: 600; color: var(--ink-2);
+    margin: 0 0 10px; letter-spacing: 0.02em;
+  }
+
+  /* Hero: the health index */
+  .hero { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  .hero .figure { font-size: 3.4rem; font-weight: 650; line-height: 1; }
+  .hero .meta { flex: 1; min-width: 190px; display: flex; flex-direction: column; gap: 6px; }
+  .hero .name { font-size: 0.8rem; color: var(--ink-2); }
+  .advice { font-size: 0.85rem; color: var(--ink-2); line-height: 1.45; }
+  .advice .risk { display: block; margin-top: 6px; color: var(--muted); }
+  .basis { font-size: 0.72rem; color: var(--muted); margin-top: 10px; }
+
+  .badge {
+    align-self: flex-start;
+    font-size: 0.78rem; color: var(--ink-2);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .badge .swatch { width: 10px; height: 10px; border-radius: 3px; background: var(--muted); flex: none; }
+  .badge.good .swatch     { background: var(--good); }
+  .badge.warning .swatch  { background: var(--warning); }
+  .badge.serious .swatch  { background: var(--serious); }
+  .badge.critical .swatch { background: var(--critical); }
+
+  /* Advisory (on-device advisor / TinyML) */
+  .advisor { display: flex; align-items: flex-start; gap: 10px; }
+  .advisor .glyph { font-size: 1.3rem; line-height: 1.2; }
+  .advisor .text { font-size: 0.95rem; font-weight: 550; line-height: 1.4; }
+  .advisor .source { font-size: 0.72rem; color: var(--muted); margin-top: 4px; }
+
+  /* Stat tiles */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 14px; display: flex; flex-direction: column; gap: 3px; min-height: 94px;
+  }
+  .tile .label { font-size: 0.78rem; color: var(--ink-2); }
+  .tile .value { font-size: 1.6rem; font-weight: 600; line-height: 1.1; }
+  .tile .value .unit { font-size: 0.8rem; font-weight: 400; color: var(--muted); margin-left: 3px; }
+  .tile .badge { margin-top: auto; font-size: 0.73rem; }
+
+  /* Chart */
+  svg.chart { display: block; width: 100%; height: auto; }
+  .chart-foot { display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--muted); margin-top: 4px; }
+
+  /* Sensor health */
+  .health { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px 14px; }
+  .flag { font-size: 0.78rem; color: var(--ink-2); display: flex; align-items: center; gap: 7px; }
+  .flag .swatch { width: 9px; height: 9px; border-radius: 50%; background: var(--good); flex: none; }
+  .flag.bad .swatch { background: var(--critical); }
+  .flag.warn .swatch { background: var(--warning); }
+  .flag.idle .swatch { background: var(--muted); }
+  .health-foot { font-size: 0.72rem; color: var(--muted); margin-top: 10px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  button {
+    font: inherit; font-size: 0.75rem; color: var(--ink-2);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 5px 10px; cursor: pointer;
+  }
+  button:hover { color: var(--ink); }
+
+  /* Logs */
+  #log {
+    margin: 0; max-height: 40vh; overflow-y: auto;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 0.71rem; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word; color: var(--ink-2);
+  }
+  footer { margin-top: 14px; font-size: 0.72rem; color: var(--muted); line-height: 1.5; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>🌫️ AURA</h1>
+    <span class="tagline">Air Quality Sentinel · on-device</span>
+    <span class="spacer"></span>
+    <span class="pill" id="conn"><span class="dot"></span><span id="conn-text">Connecting…</span></span>
+  </header>
+
+  <!-- Health index: the one hero figure of the view -->
+  <div class="card">
+    <h2>AQHI+ — smoke-adjusted health index</h2>
+    <div class="hero">
+      <div class="figure" id="aqhi">–</div>
+      <div class="meta">
+        <span class="badge" id="aqhi-badge"><span class="swatch"></span><span class="txt">—</span></span>
+        <span class="name" id="aqhi-name">Waiting for the first readings</span>
+      </div>
+      <div class="advice" style="flex-basis:100%">
+        <span id="advice-general"></span>
+        <span class="risk" id="advice-risk"></span>
+      </div>
+    </div>
+    <div class="basis" id="aqhi-basis"></div>
+  </div>
+
+  <!-- Advisory: rules today, TinyML tomorrow -->
+  <div class="card">
+    <h2>On-device advisor</h2>
+    <div class="advisor">
+      <span class="glyph">💬</span>
+      <div>
+        <div class="text" id="advisory">…</div>
+        <div class="source" id="advisory-source"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><div class="label">PM1.0</div><div class="value" id="pm1p0">–</div><div class="badge" id="b-pm1p0"><span class="swatch"></span><span class="txt">—</span></div></div>
+    <div class="tile"><div class="label">PM2.5</div><div class="value" id="pm2p5">–</div><div class="badge" id="b-pm2p5"><span class="swatch"></span><span class="txt">—</span></div></div>
+    <div class="tile"><div class="label">PM10</div><div class="value" id="pm10p0">–</div><div class="badge" id="b-pm10p0"><span class="swatch"></span><span class="txt">—</span></div></div>
+    <div class="tile"><div class="label">CO₂</div><div class="value" id="co2">–</div><div class="badge" id="b-co2"><span class="swatch"></span><span class="txt">—</span></div></div>
+    <div class="tile"><div class="label">VOC index</div><div class="value" id="voc">–</div><div class="badge" id="b-voc"><span class="swatch"></span><span class="txt">—</span></div></div>
+    <div class="tile"><div class="label">NOx index</div><div class="value" id="nox">–</div><div class="badge" id="b-nox"><span class="swatch"></span><span class="txt">—</span></div></div>
+    <div class="tile"><div class="label">Temperature</div><div class="value" id="temp">–</div></div>
+    <div class="tile"><div class="label">Humidity</div><div class="value" id="hum">–</div></div>
+  </div>
+
+  <div class="card">
+    <h2>PM2.5 — recent history</h2>
+    <svg class="chart" id="chart" viewBox="0 0 600 150" role="img" aria-label="Recent PM2.5 history"></svg>
+    <div class="chart-foot"><span id="chart-span">—</span><span>µg/m³</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Sensor health — SEN55 status register</h2>
+    <div class="health" id="health">
+      <div class="flag idle"><span class="swatch"></span>Waiting for status…</div>
+    </div>
+    <div class="health-foot">
+      <span id="health-raw"></span>
+      <button id="fan-clean" type="button">Run fan cleaning</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Logs</h2>
+    <pre id="log">Waiting for data…</pre>
+  </div>
+
+  <footer>
+    AQHI+ is the wildfire-smoke override used in Alberta and British Columbia: the ceiling of the
+    hourly PM2.5 mean divided by 10, taking the higher of that and the three-pollutant AQHI.
+    AURA measures PM2.5 but not NO₂ or O₃, so the published value is driven by the smoke term —
+    the case AURA is built for. Readings are local to the device, not a regional station.
+  </footer>
+
+<script>
+  // Indicative thresholds: WHO guidance for particulates, common indoor limits for CO2,
+  // Sensirion's index bands for VOC/NOx.
+  const THRESHOLDS = {
+    pm1p0:  [15, 55, 150],
+    pm2p5:  [15, 55, 150],
+    pm10p0: [45, 150, 250],
+    co2:    [800, 1200, 2000],
+    voc:    [150, 250, 400],
+    nox:    [20, 100, 300],
+  };
+  const STATUS = [
+    { cls: 'good',     icon: '✓', txt: 'Good' },
+    { cls: 'warning',  icon: '⚠', txt: 'Moderate' },
+    { cls: 'serious',  icon: '⚠', txt: 'High' },
+    { cls: 'critical', icon: '✖', txt: 'Very high' },
+  ];
+  const INDEX_STATUS = { 'Low': 0, 'Moderate': 1, 'High': 2, 'Very high': 3 };
+  const HEALTH_FLAGS = [
+    ['fan_error', 'Fan', 'bad'],
+    ['laser_error', 'Laser', 'bad'],
+    ['rht_error', 'Humidity/temp', 'bad'],
+    ['gas_error', 'Gas sensor', 'bad'],
+    ['fan_speed_warning', 'Fan speed', 'warn'],
+    ['fan_cleaning', 'Fan cleaning', 'warn'],
+  ];
+
+  let apiPath = null;  // resolved once, then reused
+
+  function setValue(id, val, unit, digits) {
+    const el = document.getElementById(id);
+    if (val === null || val === undefined || Number.isNaN(val)) { el.textContent = '–'; return; }
+    el.innerHTML = Number(val).toFixed(digits) + (unit ? '<span class="unit">' + unit + '</span>' : '');
+  }
+
+  function setBadge(id, level, text) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (level === null || level === undefined) {
+      el.className = 'badge';
+      el.querySelector('.txt').textContent = '—';
+      return;
+    }
+    const s = STATUS[level];
+    el.className = 'badge ' + s.cls;
+    el.querySelector('.txt').textContent = s.icon + ' ' + (text || s.txt);
+  }
+
+  function levelFor(key, val) {
+    const t = THRESHOLDS[key];
+    if (val === null || val === undefined || Number.isNaN(val) || !t) return null;
+    let i = 0;
+    while (i < t.length && val >= t[i]) i++;
+    return i;
+  }
+
+  function drawChart(points) {
+    const svg = document.getElementById('chart');
+    const W = 600, H = 150, padL = 34, padR = 44, padT = 12, padB = 22;
+    if (!points || points.length < 2) {
+      svg.innerHTML = '<text x="' + (W / 2) + '" y="' + (H / 2) +
+        '" text-anchor="middle" fill="var(--muted)" font-size="13" font-family="inherit">'
+        + 'Collecting data…</text>';
+      document.getElementById('chart-span').textContent = '—';
+      return;
+    }
+    const vals = points.map(p => p.pm25);
+    const maxVal = Math.max(15, Math.ceil(Math.max(...vals) / 5) * 5);
+    const x = i => padL + (i * (W - padL - padR)) / (points.length - 1);
+    const y = v => padT + (H - padT - padB) * (1 - v / maxVal);
+
+    let out = '';
+    // Baseline, and one reference line at the WHO 24-hour guideline.
+    out += '<line x1="' + padL + '" y1="' + y(0) + '" x2="' + (W - padR) + '" y2="' + y(0) +
+           '" stroke="var(--hairline)" stroke-width="1"/>';
+    if (maxVal > 15) {
+      out += '<line x1="' + padL + '" y1="' + y(15) + '" x2="' + (W - padR) + '" y2="' + y(15) +
+             '" stroke="var(--hairline)" stroke-width="1"/>' +
+             '<text x="' + (padL - 5) + '" y="' + (y(15) + 4) + '" text-anchor="end" ' +
+             'fill="var(--muted)" font-size="11" font-family="inherit">15</text>';
+    }
+    out += '<text x="' + (padL - 5) + '" y="' + (y(maxVal) + 10) + '" text-anchor="end" ' +
+           'fill="var(--muted)" font-size="11" font-family="inherit">' + maxVal + '</text>';
+
+    const d = points.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p.pm25).toFixed(1)).join(' ');
+    out += '<path d="' + d + '" fill="none" stroke="var(--series-1)" stroke-width="2" ' +
+           'stroke-linejoin="round" stroke-linecap="round"/>';
+
+    // End marker with a surface ring, plus the one direct label.
+    const lastX = x(points.length - 1), lastY = y(vals[vals.length - 1]);
+    out += '<circle cx="' + lastX.toFixed(1) + '" cy="' + lastY.toFixed(1) + '" r="4" ' +
+           'fill="var(--series-1)" stroke="var(--surface)" stroke-width="2"/>';
+    out += '<text x="' + (lastX + 9).toFixed(1) + '" y="' + (lastY + 4).toFixed(1) + '" ' +
+           'fill="var(--ink-2)" font-size="12" font-weight="600" font-family="inherit">' +
+           vals[vals.length - 1].toFixed(1) + '</text>';
+    svg.innerHTML = out;
+
+    const span = Math.round((points[points.length - 1].t - points[0].t) / 60);
+    document.getElementById('chart-span').textContent =
+      span >= 1 ? 'last ' + span + ' min' : 'last minute';
+  }
+
+  function drawHealth(health) {
+    const box = document.getElementById('health');
+    const raw = document.getElementById('health-raw');
+    if (!health) {
+      box.innerHTML = '<div class="flag idle"><span class="swatch"></span>Waiting for status…</div>';
+      raw.textContent = '';
+      return;
+    }
+    let out = '';
+    for (const [key, label, severity] of HEALTH_FLAGS) {
+      const active = !!health[key];
+      const cls = active ? severity : 'good';
+      const mark = active ? (severity === 'bad' ? '✖ fault' : '⚠ active') : '✓ ok';
+      out += '<div class="flag ' + cls + '"><span class="swatch"></span>' + label + ' — ' + mark + '</div>';
+    }
+    box.innerHTML = out;
+    raw.textContent = 'Register ' + (health.raw_hex || '');
+  }
+
+  async function fetchData() {
+    const paths = apiPath ? [apiPath] : ['/data', '/api/data'];
+    for (const p of paths) {
+      try {
+        const res = await fetch(p, { cache: 'no-store' });
+        if (!res.ok) continue;
+        apiPath = p;
+        return await res.json();
+      } catch (e) { /* try the next candidate */ }
+    }
+    throw new Error('no API endpoint reachable');
+  }
+
+  async function refresh() {
+    const conn = document.getElementById('conn');
+    try {
+      const d = await fetchData();
+
+      // Health index
+      const idx = d.index || {};
+      document.getElementById('aqhi').textContent = idx.display || '–';
+      if (idx.category) {
+        setBadge('aqhi-badge', INDEX_STATUS[idx.category], idx.category + ' risk');
+        document.getElementById('aqhi-name').textContent =
+          'Air Quality Health Index (smoke-adjusted)';
+        document.getElementById('advice-general').textContent = idx.advice_general || '';
+        document.getElementById('advice-risk').textContent =
+          idx.advice_at_risk ? 'At-risk groups: ' + idx.advice_at_risk : '';
+        document.getElementById('aqhi-basis').textContent =
+          'PM2.5 mean ' + (idx.pm25_mean ?? '–') + ' µg/m³ over ' +
+          Math.max(1, Math.round((idx.window_s || 0) / 60)) + ' min · smoke term ' +
+          (idx.plus ?? '–') + ' · three-pollutant term ' + (idx.three_pollutant ?? '–');
+      } else {
+        setBadge('aqhi-badge', null);
+        document.getElementById('aqhi-basis').textContent = '';
+      }
+
+      // Advisory
+      const adv = d.advisory || {};
+      document.getElementById('advisory').textContent = adv.text || '…';
+      document.getElementById('advisory-source').textContent =
+        adv.source === 'tinyml' ? 'TinyML model' : 'Deterministic rules — TinyML model in training';
+
+      // Tiles
+      const s = d.sen55 || {}, c = d.scd41 || {};
+      setValue('pm1p0', s.pm1p0, 'µg/m³', 1);   setBadge('b-pm1p0', levelFor('pm1p0', s.pm1p0));
+      setValue('pm2p5', s.pm2p5, 'µg/m³', 1);   setBadge('b-pm2p5', levelFor('pm2p5', s.pm2p5));
+      setValue('pm10p0', s.pm10p0, 'µg/m³', 1); setBadge('b-pm10p0', levelFor('pm10p0', s.pm10p0));
+      setValue('co2', c.co2, 'ppm', 0);         setBadge('b-co2', levelFor('co2', c.co2));
+      setValue('voc', s.voc, '', 0);            setBadge('b-voc', levelFor('voc', s.voc));
+      setValue('nox', s.nox, '', 0);            setBadge('b-nox', levelFor('nox', s.nox));
+      setValue('temp', d.temperature, '°C', 1);
+      setValue('hum', d.humidity, '%', 1);
+
+      drawChart(d.history);
+      drawHealth(d.health);
+
+      const log = document.getElementById('log');
+      if (d.logs && d.logs.length) {
+        const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+        log.textContent = d.logs.join('\n');
+        if (atBottom) log.scrollTop = log.scrollHeight;
+      }
+
+      conn.className = 'pill ok';
+      document.getElementById('conn-text').textContent = 'Live';
+    } catch (e) {
+      conn.className = 'pill ko';
+      document.getElementById('conn-text').textContent = 'Disconnected';
+    }
+  }
+
+  document.getElementById('fan-clean').addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    btn.textContent = 'Cleaning…';
+    for (const p of ['/fan-clean', '/api/fan-clean']) {
+      try {
+        const res = await fetch(p, { method: 'POST' });
+        if (res.ok) break;
+      } catch (e) { /* try the next candidate */ }
+    }
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Run fan cleaning'; }, 12000);
+  });
+
+  refresh();
+  setInterval(refresh, 2000);
+</script>
+</body>
+</html>

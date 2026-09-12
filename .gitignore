@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.log
+.DS_Store
+# poids de modŠles volumineux : … t‚l‚charger … part, pas dans git
+*.gguf
+*.bin
+models/

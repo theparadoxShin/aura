@@ -1,0 +1,7 @@
+name: AURA
+description: "Offline edge-AI air-quality sentinel for wildfire smoke: measures the local air, computes Canada's AQHI+, advises, and can act - all on one UNO Q, no internet."
+ports:
+- 7000
+bricks:
+- arduino:web_ui: {}
+icon: 🌫️
