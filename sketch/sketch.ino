@@ -158,6 +158,7 @@ static bool alarmMuted = false;  // hush button: silences the buzzer only
 static uint32_t standDownUntil = 0;  // physical button: pauses ALL actuators
 static bool buttonWasDown = false;
 static uint32_t buttonChangedAt = 0;
+static uint8_t sen55ErrorStreak = 0;  // consecutive I2C failures; triggers a re-init
 
 // ---------------------------------------------------------------- logging helpers
 
@@ -783,7 +784,16 @@ void loop() {
                                               voc, nox);
     if (error) {
       logError("SEN55 readMeasuredValues", error);
+      // A corrupted bus (CRC errors) rarely heals by itself: after a burst of
+      // consecutive failures, reset and restart the sensor through the normal
+      // retry path instead of logging errors forever.
+      if (++sen55ErrorStreak >= 8) {
+        sen55ErrorStreak = 0;
+        sen55Ready = false;
+        logLine("SEN55: too many consecutive I2C errors, re-initialising the sensor");
+      }
     } else {
+      sen55ErrorStreak = 0;
       lastPm1p0 = pm1p0;
       lastPm2p5 = pm2p5;
       lastPm10p0 = pm10p0;
