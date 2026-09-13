@@ -51,6 +51,21 @@ static const uint8_t OLED_ADDR_ALT = 0x3C;
 static const float SEN55_TEMPERATURE_OFFSET_C = 3.0f;
 static const float SCD41_TEMPERATURE_OFFSET_C = 5.0f;
 
+/*
+ * Actuator outputs. These are plain digital outputs, active HIGH, meant for
+ * opto-isolated add-on modules: a buzzer or siren, a relay driving a fan or an
+ * air purifier, and one spare line. They are driven by the MCU, not by Linux,
+ * so the response stays real-time even if the Linux side is busy.
+ */
+static const uint8_t PIN_ALARM = 2;
+static const uint8_t PIN_RELAY = 3;
+static const uint8_t PIN_AUX = 4;
+
+// Alert levels, pushed from Python from the AQHI+ category.
+static const int ALERT_NONE = 0;
+static const int ALERT_HIGH = 1;       // AQHI+ 7-10
+static const int ALERT_VERY_HIGH = 2;  // AQHI+ above 10
+
 // SEN55 device status register bits (SEN5x datasheet, section 6.1.4).
 static const uint32_t ST_FAN_ERROR = 1UL << 4;    // fan switched on but 0 RPM: blocked or broken
 static const uint32_t ST_LASER_ERROR = 1UL << 5;  // laser current out of range
@@ -65,6 +80,8 @@ static const uint32_t SCD41_PERIOD_MS = 2000;  // poll data-ready; the sensor it
 static const uint32_t STATUS_PERIOD_MS = 10000;
 static const uint32_t OLED_PERIOD_MS = 220;
 static const uint32_t INIT_RETRY_MS = 10000;
+static const uint32_t OUTPUT_PERIOD_MS = 50;   // how often the actuator pattern is refreshed
+static const uint32_t SELF_TEST_MS = 10000;    // length of the dashboard self-test
 
 // ---------------------------------------------------------------- device state
 
@@ -102,6 +119,13 @@ static bool powerFromUsb = true;       // no fuel gauge yet: assume mains/USB
 static int batteryPercent = -1;
 static bool batteryCharging = false;
 static uint32_t marqueeOffset = 0;
+
+// Critical-alert state. When it is raised the OLED drops everything else.
+static int alertLevel = ALERT_NONE;
+static char alertMessage[48] = "";
+static uint32_t lastOutputUpdate = 0;
+static uint32_t selfTestUntil = 0;
+static bool alarmMuted = false;  // hush button: silences the buzzer only
 
 // ---------------------------------------------------------------- logging helpers
 
@@ -152,10 +176,14 @@ static void updateStatusLed() {
 
 // ---------------------------------------------------------------- OLED drawing
 
-static void drawCentered(uint8_t y, const char* text, uint8_t advance) {
+static void drawCenteredColor(uint8_t y, const char* text, uint8_t advance, uint8_t colour) {
   uint8_t width = (uint8_t)(strlen(text) * advance);
   uint8_t x = (width >= oled.getWidth()) ? 0 : (uint8_t)((oled.getWidth() - width) / 2);
-  oled.text(x, y, text);
+  oled.text(x, y, text, colour);
+}
+
+static void drawCentered(uint8_t y, const char* text, uint8_t advance) {
+  drawCenteredColor(y, text, advance, COLOR_WHITE);
 }
 
 static void drawPowerIcon(uint8_t x, uint8_t y) {
@@ -199,6 +227,51 @@ static void drawAdvisory() {
   }
   window[columns] = '\0';
   oled.text(0, 55, window);
+}
+
+/*
+ * Full-screen takeover for a dangerous level. Nothing else is shown: no
+ * measurements, no advisory band. At the top level the whole screen inverts
+ * twice a second, which is the mono-display equivalent of a red flash.
+ */
+static void drawAlertScreen(uint32_t now) {
+  char buffer[20];
+  bool inverted = (alertLevel >= ALERT_VERY_HIGH) && (((now / 600) % 2) == 0);
+  uint8_t ink = inverted ? COLOR_BLACK : COLOR_WHITE;
+
+  oled.erase();
+  if (inverted) {
+    oled.rectangleFill(0, 0, oled.getWidth(), oled.getHeight(), COLOR_WHITE);
+  }
+
+  // A self-test with no real danger gets its own screen, never the danger banner.
+  if (alertLevel == ALERT_NONE) {
+    oled.setFont(QW_FONT_8X16);
+    drawCentered(12, "SELF TEST", 8);
+    oled.setFont(QW_FONT_5X7);
+    drawCentered(36, "ALARM / RELAY / AUX", 6);
+    drawCentered(48, "PULSING 10 S", 6);
+    oled.display();
+    return;
+  }
+
+  oled.setFont(QW_FONT_8X16);
+  drawCenteredColor(1, "! DANGER !", 8, ink);
+
+  if (aqhiValue > 10) {
+    snprintf(buffer, sizeof(buffer), "AQHI 10+");
+  } else {
+    snprintf(buffer, sizeof(buffer), "AQHI %d", aqhiValue);
+  }
+  drawCenteredColor(21, buffer, 8, ink);
+
+  oled.setFont(QW_FONT_5X7);
+  drawCenteredColor(40, aqhiLabel, 6, ink);
+  if (alertMessage[0] != '\0') {
+    drawCenteredColor(54, alertMessage, 6, ink);
+  }
+
+  oled.display();
 }
 
 static void drawMainScreen() {
@@ -297,6 +370,40 @@ static void playSplash() {
   drawCentered(46, "EDGE AI - OFFLINE", 6);
   oled.display();
   delay(1100);
+}
+
+// ---------------------------------------------------------------- actuator outputs
+
+/*
+ * Drives the three output lines from the alert level. Called every 50 ms, so the
+ * beep patterns are generated here rather than with blocking delays.
+ */
+static void updateOutputs(uint32_t now) {
+  bool alarm = false;
+  bool relay = false;
+  bool aux = false;
+
+  if (now < selfTestUntil) {
+    // Self-test: pulse all three lines together at 2 Hz so wiring is easy to check.
+    alarm = relay = aux = (((now / 250) % 2) == 0);
+  } else if (alertLevel >= ALERT_VERY_HIGH) {
+    relay = true;  // purifier or fan on continuously
+    aux = true;
+    alarm = (((now / 300) % 2) == 0);  // urgent, fast beeping
+  } else if (alertLevel == ALERT_HIGH) {
+    relay = true;
+    alarm = ((now % 5000) < 200);  // one short reminder beep every 5 s
+  }
+
+  // The hush button gates the buzzer alone: the purifier keeps running and the
+  // screen keeps warning, so silencing never hides the danger.
+  if (alarmMuted && now >= selfTestUntil) {
+    alarm = false;
+  }
+
+  digitalWrite(PIN_ALARM, alarm ? HIGH : LOW);
+  digitalWrite(PIN_RELAY, relay ? HIGH : LOW);
+  digitalWrite(PIN_AUX, aux ? HIGH : LOW);
 }
 
 // ---------------------------------------------------------------- initialisation
@@ -432,6 +539,42 @@ void setHealthIndex(int value, String label) {
   updateStatusLed();
 }
 
+/*
+ * Raises or clears the danger state. Level 2 (AQHI+ above 10) inverts the whole
+ * screen and beeps urgently; level 1 (AQHI+ 7-10) shows the same takeover screen
+ * steadily and beeps once every five seconds.
+ */
+void setAlert(int level, String message) {
+  bool changed = (level != alertLevel);
+  alertLevel = level;
+  message.toCharArray(alertMessage, sizeof(alertMessage));
+  if (changed) {
+    if (level >= ALERT_VERY_HIGH) {
+      logLine(String("ALERT level 2 (very high) raised: ") + alertMessage);
+    } else if (level == ALERT_HIGH) {
+      logLine(String("ALERT level 1 (high) raised: ") + alertMessage);
+    } else {
+      logLine("Alert cleared, outputs released");
+    }
+  }
+}
+
+// Silences the buzzer while leaving the relay and the warning screen untouched.
+void setAlarmMute(int muted) {
+  bool wanted = (muted != 0);
+  if (wanted != alarmMuted) {
+    alarmMuted = wanted;
+    logLine(alarmMuted ? "Buzzer muted, relay and display still active"
+                       : "Buzzer un-muted");
+  }
+}
+
+// Pulses all three output lines for ten seconds so wiring can be verified.
+void selfTestOutputs() {
+  selfTestUntil = millis() + SELF_TEST_MS;
+  logLine("Output self-test started: alarm, relay and aux pulsing for 10 s");
+}
+
 // Reserved for the battery monitor: percent, on-USB flag, charging flag.
 void setPowerState(int percent, int onUsb, int charging) {
   batteryPercent = percent;
@@ -475,6 +618,16 @@ void setup() {
   Bridge.provide("set_power_state", setPowerState);
   Bridge.provide("start_fan_cleaning", startFanCleaning);
   Bridge.provide("report_state", reportState);
+  Bridge.provide("set_alert", setAlert);
+  Bridge.provide("self_test_outputs", selfTestOutputs);
+  Bridge.provide("set_alarm_mute", setAlarmMute);
+
+  pinMode(PIN_ALARM, OUTPUT);
+  pinMode(PIN_RELAY, OUTPUT);
+  pinMode(PIN_AUX, OUTPUT);
+  digitalWrite(PIN_ALARM, LOW);
+  digitalWrite(PIN_RELAY, LOW);
+  digitalWrite(PIN_AUX, LOW);
 
 #if defined(LEDR) && defined(LEDG) && defined(LEDB)
   pinMode(LEDR, OUTPUT);
@@ -564,9 +717,19 @@ void loop() {
     reportSensorStatus(false);
   }
 
+  if (now - lastOutputUpdate >= OUTPUT_PERIOD_MS) {
+    lastOutputUpdate = now;
+    updateOutputs(now);
+  }
+
   if (oledReady && (now - lastOledDraw >= OLED_PERIOD_MS)) {
     lastOledDraw = now;
     marqueeOffset++;
-    drawMainScreen();
+    // A danger level takes the whole screen; nothing else is drawn.
+    if (alertLevel > ALERT_NONE || now < selfTestUntil) {
+      drawAlertScreen(now);
+    } else {
+      drawMainScreen();
+    }
   }
 }

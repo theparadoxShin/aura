@@ -124,6 +124,32 @@
   }
   button:hover { color: var(--ink); }
 
+  /* Critical alert banner */
+  .alarm {
+    display: none;
+    background: var(--critical);
+    color: #ffffff;
+    border-radius: 12px;
+    padding: 12px 16px;
+    margin-bottom: 12px;
+    align-items: center;
+    gap: 12px;
+  }
+  .alarm.on { display: flex; }
+  .alarm .glyph { font-size: 1.5rem; }
+  .alarm .head { font-weight: 700; letter-spacing: 0.06em; font-size: 0.9rem; }
+  .alarm .sub { font-size: 0.82rem; opacity: 0.92; margin-top: 2px; }
+
+  /* Dataset / training */
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  .kv { font-size: 0.78rem; color: var(--ink-2); }
+  .kv b { font-weight: 600; color: var(--ink); }
+  button[aria-pressed="true"] {
+    border-color: var(--series-1); color: var(--ink); font-weight: 600;
+  }
+  .hint { font-size: 0.72rem; color: var(--muted); line-height: 1.5; margin-top: 8px; }
+
   /* Logs */
   #log {
     margin: 0; max-height: 40vh; overflow-y: auto;
@@ -142,6 +168,19 @@
     <span class="pill" id="conn"><span class="dot"></span><span id="conn-text">Connecting…</span></span>
   </header>
 
+  <!-- Danger banner: shown only when the index reaches a high-risk category -->
+  <div class="alarm" id="alarm">
+    <span class="glyph">✖</span>
+    <div style="flex:1">
+      <div class="head" id="alarm-head">DANGER</div>
+      <div class="sub" id="alarm-sub"></div>
+    </div>
+    <button id="silence" type="button"
+            style="background:rgba(255,255,255,0.15);border-color:rgba(255,255,255,0.4);color:#fff">
+      Silence buzzer 15 min
+    </button>
+  </div>
+
   <!-- Health index: the one hero figure of the view -->
   <div class="card">
     <h2>AQHI+ — smoke-adjusted health index</h2>
@@ -150,6 +189,7 @@
       <div class="meta">
         <span class="badge" id="aqhi-badge"><span class="swatch"></span><span class="txt">—</span></span>
         <span class="name" id="aqhi-name">Waiting for the first readings</span>
+        <span class="name" id="aqhi-live"></span>
       </div>
       <div class="advice" style="flex-basis:100%">
         <span id="advice-general"></span>
@@ -167,6 +207,7 @@
       <div>
         <div class="text" id="advisory">…</div>
         <div class="source" id="advisory-source"></div>
+        <div class="source" id="forecast"></div>
       </div>
     </div>
   </div>
@@ -196,6 +237,32 @@
     <div class="health-foot">
       <span id="health-raw"></span>
       <button id="fan-clean" type="button">Run fan cleaning</button>
+      <button id="self-test" type="button">Test alarm outputs</button>
+      <button id="demo-alert" type="button">Rehearse danger alert (30 s)</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Training dataset — on-device time series</h2>
+    <div class="row kv" id="dataset-stats" style="gap:14px">Waiting for the store…</div>
+    <div class="row">
+      <span class="kv">Label samples as:</span>
+      <button class="label-btn" data-label="clean" type="button">Clean air</button>
+      <button class="label-btn" data-label="smoke" type="button">Smoke event</button>
+      <button class="label-btn" data-label="cooking" type="button">Cooking</button>
+      <button id="export" type="button">Download CSV</button>
+      <button id="export-balanced" type="button">Download CSV (balanced)</button>
+    </div>
+    <div class="row">
+      <span class="kv">Started late? Backfill already-stored rows with the current label:</span>
+      <button class="backfill" data-minutes="5" type="button">Last 5 min</button>
+      <button class="backfill" data-minutes="10" type="button">Last 10 min</button>
+      <button class="backfill" data-minutes="20" type="button">Last 20 min</button>
+    </div>
+    <div class="hint">
+      One row every 10 s with all channels and the active label, kept 30 days in SQLite on the
+      board. Set the label before you create an event, put it back to <em>clean air</em> after —
+      that is the supervision the TinyML model trains on. The CSV export feeds Edge Impulse.
     </div>
   </div>
 
@@ -369,11 +436,70 @@
         document.getElementById('aqhi-basis').textContent = '';
       }
 
+      // The live index is what the alarm and the relay follow.
+      document.getElementById('aqhi-live').textContent =
+        idx.live_value === null || idx.live_value === undefined
+          ? ''
+          : 'Live now (5 min): ' + idx.live_display + ' — ' + (idx.live_category || '') +
+            ', PM2.5 ' + (idx.live_pm25 ?? '–') + ' µg/m³. Drives the alarm.';
+
+      // Danger banner — highest-priority element on the page
+      const alarm = document.getElementById('alarm');
+      if (d.alert >= 1) {
+        alarm.className = 'alarm on';
+        document.getElementById('alarm-head').textContent =
+          d.alert >= 2 ? '✖ DANGER — VERY HIGH RISK' : '⚠ DANGER — HIGH RISK';
+        document.getElementById('alarm-sub').textContent =
+          (d.alert >= 2 ? 'Stay indoors and close windows. ' : 'Limit outdoor exertion. ')
+          + (d.alarm_muted
+              ? 'Buzzer silenced for ' + Math.ceil((d.mute_seconds_left || 0) / 60)
+                + ' min; purifier output still active.'
+              : 'Alarm and purifier outputs are active.')
+          + (d.alert_simulated ? ' (rehearsal — not a real measurement)' : '');
+        document.getElementById('silence').textContent =
+          d.alarm_muted ? 'Un-silence buzzer' : 'Silence buzzer 15 min';
+      } else {
+        alarm.className = 'alarm';
+      }
+
       // Advisory
       const adv = d.advisory || {};
       document.getElementById('advisory').textContent = adv.text || '…';
       document.getElementById('advisory-source').textContent =
         adv.source === 'tinyml' ? 'TinyML model' : 'Deterministic rules — TinyML model in training';
+
+      // Forecast
+      const fc = d.forecast || {};
+      document.getElementById('forecast').textContent =
+        fc.pm25 === null || fc.pm25 === undefined
+          ? 'Forecast: collecting data'
+          : 'Forecast: PM2.5 ≈ ' + fc.pm25 + ' µg/m³ in ' +
+            Math.round((fc.horizon_s || 900) / 60) + ' min (' + (fc.trend || '—') + ', ' +
+            (fc.source === 'tinyml' ? 'TinyML' : 'linear trend') + ')';
+
+      // Dataset — per-label minutes, which is what decides when training can start
+      const ds = d.dataset || {};
+      const nowS = Date.now() / 1000;
+      if (ds.error) {
+        document.getElementById('dataset-stats').innerHTML = 'Store error: ' + ds.error;
+      } else {
+        const spanMin = ds.oldest ? Math.round((nowS - ds.oldest) / 60) : 0;
+        const lastAge = ds.newest ? Math.round(nowS - ds.newest) : null;
+        const parts = [
+          '<span class="kv">Total: <b>' + (ds.rows || 0) + ' rows</b> over ' +
+            (spanMin >= 120 ? Math.round(spanMin / 60) + ' h' : spanMin + ' min') + '</span>',
+          '<span class="kv">Last write: <b>' +
+            (lastAge === null ? '—' : lastAge + ' s ago') + '</b></span>',
+        ];
+        for (const [name, count] of Object.entries(ds.by_label || {})) {
+          parts.push('<span class="kv">' + name + ': <b>' +
+            Math.round(count * 10 / 60) + ' min</b> (' + count + ')</span>');
+        }
+        document.getElementById('dataset-stats').innerHTML = parts.join('');
+      }
+      document.querySelectorAll('.label-btn').forEach(b => {
+        b.setAttribute('aria-pressed', String(b.dataset.label === ds.label));
+      });
 
       // Tiles
       const s = d.sen55 || {}, c = d.scd41 || {};
@@ -404,17 +530,92 @@
     }
   }
 
-  document.getElementById('fan-clean').addEventListener('click', async (ev) => {
-    const btn = ev.currentTarget;
-    btn.disabled = true;
-    btn.textContent = 'Cleaning…';
-    for (const p of ['/fan-clean', '/api/fan-clean']) {
+  // The brick's mount point is probed the same way as the data endpoint.
+  // Parameters go in the query string: the handlers take plain scalars, which
+  // FastAPI binds from the query, not from a JSON body.
+  async function post(path, params) {
+    const query = params ? '?' + new URLSearchParams(params).toString() : '';
+    for (const p of [path, '/api' + path]) {
       try {
-        const res = await fetch(p, { method: 'POST' });
-        if (res.ok) break;
+        const res = await fetch(p + query, { method: 'POST' });
+        if (res.ok) return await res.json().catch(() => ({}));
       } catch (e) { /* try the next candidate */ }
     }
-    setTimeout(() => { btn.disabled = false; btn.textContent = 'Run fan cleaning'; }, 12000);
+    return null;
+  }
+
+  function holdButton(btn, busyText, ms) {
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = busyText;
+    setTimeout(() => { btn.disabled = false; btn.textContent = original; }, ms);
+  }
+
+  document.getElementById('fan-clean').addEventListener('click', async (ev) => {
+    holdButton(ev.currentTarget, 'Cleaning…', 12000);
+    await post('/fan-clean');
+  });
+
+  document.getElementById('self-test').addEventListener('click', async (ev) => {
+    holdButton(ev.currentTarget, 'Testing…', 11000);
+    await post('/self-test');
+  });
+
+  document.getElementById('silence').addEventListener('click', async (ev) => {
+    const muted = ev.currentTarget.textContent.indexOf('Un-silence') === 0;
+    await post(muted ? '/unsilence' : '/silence', muted ? null : { minutes: 15 });
+    refresh();
+  });
+
+  document.getElementById('demo-alert').addEventListener('click', async (ev) => {
+    holdButton(ev.currentTarget, 'Alert raised…', 31000);
+    await post('/simulate-alert', { level: 2 });
+    refresh();
+  });
+
+  document.querySelectorAll('.label-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await post('/label', { label: btn.dataset.label });
+      refresh();
+    });
+  });
+
+  document.querySelectorAll('.backfill').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const current = document.querySelector('.label-btn[aria-pressed="true"]');
+      if (!current) return;
+      await post('/relabel', { label: current.dataset.label, minutes: btn.dataset.minutes });
+      refresh();
+    });
+  });
+
+  async function downloadDataset(balanced) {
+    let data = null;
+    const query = balanced ? '?balance=1' : '';
+    for (const p of ['/export', '/api/export']) {
+      try {
+        const res = await fetch(p + query, { cache: 'no-store' });
+        if (res.ok) { data = await res.json(); break; }
+      } catch (e) { /* try the next candidate */ }
+    }
+    if (!data || !data.ok) return;
+    // Build the file in the browser: no temporary files on the board's flash.
+    const url = URL.createObjectURL(new Blob([data.csv], { type: 'text/csv' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = balanced ? 'aura-dataset-balanced.csv' : 'aura-dataset.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  document.getElementById('export').addEventListener('click', async (ev) => {
+    holdButton(ev.currentTarget, 'Exporting…', 3000);
+    await downloadDataset(false);
+  });
+
+  document.getElementById('export-balanced').addEventListener('click', async (ev) => {
+    holdButton(ev.currentTarget, 'Exporting…', 3000);
+    await downloadDataset(true);
   });
 
   refresh();
