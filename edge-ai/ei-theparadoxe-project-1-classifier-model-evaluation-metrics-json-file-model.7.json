@@ -1,0 +1,333 @@
+{
+  "version": 6,
+  "validation": {
+    "int8": {
+      "confusion_matrix": [
+        [
+          17,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          7
+        ]
+      ],
+      "classification_report": {
+        "0": {
+          "precision": 1,
+          "recall": 1,
+          "f1-score": 1,
+          "support": 17
+        },
+        "2": {
+          "precision": 1,
+          "recall": 1,
+          "f1-score": 1,
+          "support": 7
+        },
+        "accuracy": 1,
+        "macro avg": {
+          "precision": 1,
+          "recall": 1,
+          "f1-score": 1,
+          "support": 24
+        },
+        "weighted avg": {
+          "precision": 1,
+          "recall": 1,
+          "f1-score": 1,
+          "support": 24
+        }
+      },
+      "roc_auc": null,
+      "loss": 0.21667978052325165,
+      "support": 24,
+      "weighted_average": {
+        "precision": 1,
+        "recall": 1,
+        "f1-score": 1
+      },
+      "subgroup_metrics": {
+        "facetted": [],
+        "per_key": {
+          "class_name": {
+            "per_group": {
+              "clean": {
+                "confusion_matrix": [
+                  [
+                    17,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    0
+                  ]
+                ],
+                "classification_report": {
+                  "0": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 17
+                  },
+                  "accuracy": 1,
+                  "macro avg": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 17
+                  },
+                  "weighted avg": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 17
+                  }
+                },
+                "roc_auc": null,
+                "loss": 0.22380323865659266,
+                "support": 17,
+                "weighted_average": {
+                  "precision": 1,
+                  "recall": 1,
+                  "f1-score": 1
+                }
+              },
+              "smoke": {
+                "confusion_matrix": [
+                  [
+                    0,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    7
+                  ]
+                ],
+                "classification_report": {
+                  "2": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 7
+                  },
+                  "accuracy": 1,
+                  "macro avg": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 7
+                  },
+                  "weighted avg": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 7
+                  }
+                },
+                "roc_auc": null,
+                "loss": 0.1993799536279949,
+                "support": 7,
+                "weighted_average": {
+                  "precision": 1,
+                  "recall": 1,
+                  "f1-score": 1
+                }
+              }
+            }
+          }
+        }
+      },
+      "class_names": [
+        "clean",
+        "cooking",
+        "smoke"
+      ]
+    },
+    "float32": {
+      "confusion_matrix": [
+        [
+          17,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          7
+        ]
+      ],
+      "classification_report": {
+        "0": {
+          "precision": 1,
+          "recall": 1,
+          "f1-score": 1,
+          "support": 17
+        },
+        "2": {
+          "precision": 1,
+          "recall": 1,
+          "f1-score": 1,
+          "support": 7
+        },
+        "accuracy": 1,
+        "macro avg": {
+          "precision": 1,
+          "recall": 1,
+          "f1-score": 1,
+          "support": 24
+        },
+        "weighted avg": {
+          "precision": 1,
+          "recall": 1,
+          "f1-score": 1,
+          "support": 24
+        }
+      },
+      "roc_auc": null,
+      "loss": 0.2121795996481822,
+      "support": 24,
+      "weighted_average": {
+        "precision": 1,
+        "recall": 1,
+        "f1-score": 1
+      },
+      "subgroup_metrics": {
+        "facetted": [],
+        "per_key": {
+          "class_name": {
+            "per_group": {
+              "clean": {
+                "confusion_matrix": [
+                  [
+                    17,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    0
+                  ]
+                ],
+                "classification_report": {
+                  "0": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 17
+                  },
+                  "accuracy": 1,
+                  "macro avg": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 17
+                  },
+                  "weighted avg": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 17
+                  }
+                },
+                "roc_auc": null,
+                "loss": 0.2194401077672445,
+                "support": 17,
+                "weighted_average": {
+                  "precision": 1,
+                  "recall": 1,
+                  "f1-score": 1
+                }
+              },
+              "smoke": {
+                "confusion_matrix": [
+                  [
+                    0,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    7
+                  ]
+                ],
+                "classification_report": {
+                  "2": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 7
+                  },
+                  "accuracy": 1,
+                  "macro avg": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 7
+                  },
+                  "weighted avg": {
+                    "precision": 1,
+                    "recall": 1,
+                    "f1-score": 1,
+                    "support": 7
+                  }
+                },
+                "roc_auc": null,
+                "loss": 0.19454693707331647,
+                "support": 7,
+                "weighted_average": {
+                  "precision": 1,
+                  "recall": 1,
+                  "f1-score": 1
+                }
+              }
+            }
+          }
+        }
+      },
+      "class_names": [
+        "clean",
+        "cooking",
+        "smoke"
+      ]
+    }
+  }
+}
