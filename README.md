@@ -63,14 +63,26 @@ The two communicate through the **Arduino Router Bridge (RPC)**, so computation 
 
 ### Digital pins (MCU side, 3.3 V logic)
 
-| Pin | Direction | Role |
-|---|---|---|
-| `D2` | output, active-HIGH | **Alarm** — buzzer/siren module. Fast 1.7 Hz beeping at very-high risk, one short beep every 5 s at high risk |
-| `D3` | output, active-HIGH | **Relay** — fan / air-purifier / HVAC module. Continuously on while an alert is raised |
-| `D4` | output, active-HIGH | **Auxiliary** — spare output, on at very-high risk |
-| `D5` | input, `INPUT_PULLUP` | **Stand-down push button** to GND. One press pauses all three outputs for 10 min; a second press re-arms immediately |
+| Pin | Direction | Wiring | Role |
+|---|---|---|---|
+| `D2` | output, active-HIGH | signal → buzzer module IN (module VCC/GND to 3V3/GND) | **Alarm** — fast 1.7 Hz beeping at very-high risk, one short reminder beep every 5 s at high risk |
+| `D3` | output, active-HIGH | signal → relay module IN | **Purifier/fan relay** — continuously closed while an alert is raised |
+| `D4` | output, active-HIGH | signal → spare driver/module | **Auxiliary output** — on at very-high risk (siren, shutter, ventilation damper…) |
+| `D5` | input, `INPUT_PULLUP` | momentary push button between `D5` and `GND` | **Stand-down button** — one press pauses the three outputs for 10 min (burnt-toast protection); a second press re-arms immediately. Never hides the OLED/dashboard warning |
+| `D6` | output, active-HIGH | green LED + 220–330 Ω series resistor → GND | **Status lamp — green**: steady = air good (AQHI+ 1–3), system healthy |
+| `D7` | output, active-HIGH | yellow LED + 220–330 Ω → GND | **Status lamp — yellow**: blinking = sensors warming up · steady = caution (AQHI+ 4–6, or hourly index still elevated after an event while the live air has cleared) |
+| `D8` | output, active-HIGH | red LED + 220–330 Ω → GND | **Status lamp — red**: steady = high risk (live alert 1) · blinking = very high risk (live alert 2) |
 
-Drive inductive loads (fans, purifiers) through a proper relay/driver module — never directly from a GPIO. On-board RGB LEDs (active-low) show the ambient risk colour: blue = warming up, green → amber → red.
+Behaviour notes:
+
+- **Lamps vs actuators:** the status LEDs are *indicators* — the stand-down button pauses D2/D3/D4 but never the LEDs, so the danger stays visible while the noise is hushed. All three LEDs blink together during the dashboard's output self-test (and light together at boot as a lamp test).
+- **Green/yellow follow the official hourly AQHI+; red follows the live 5-minute alert level** — "danger right now" reacts at the speed of the room, not of the hourly mean.
+- Drive inductive loads (fans, purifiers) through a proper relay/driver module — never directly from a GPIO (3.3 V, a few mA).
+- The on-board RGB LED (active-low) mirrors the risk colour as well: blue = warming up, green → amber → red.
+
+### Bridge channels (MCU ↔ MPU RPC)
+
+`sen55_data`, `scd41_data`, `sensor_status`, `log`, `outputs_paused` (MCU → Python) · `set_health_index`, `set_advisory`, `set_alert`, `set_alarm_mute`, `set_power_state`, `start_fan_cleaning`, `self_test_outputs`, `report_state` (Python → MCU).
 
 ### Network ports
 
@@ -144,6 +156,7 @@ One row every 10 s in SQLite (`data/aura.db`): all channels + AQHI+ + operator l
 | SparkFun Qwiic OLED 1.3" (128×64) | Local readout + alert takeover screen |
 | Qwiic cables | Plug-and-play I2C |
 | Buzzer module, relay module, push button | Alarm / purifier / stand-down on D2–D5 |
+| 3 LEDs (green, yellow, red) + 220–330 Ω resistors | Status lamps on D6–D8 |
 | *(field)* Solar panel + MPPT + 12 V LiFePO₄ + fuses | Off-grid power |
 | Custom 3D-printed enclosure | Field-ready housing, swappable battery |
 
@@ -170,7 +183,8 @@ One row every 10 s in SQLite (`data/aura.db`): all channels + AQHI+ + operator l
 - [x] SQLite time-series logging with labelling, backfill, balanced CSV export (full MLOps loop)
 - [x] Live web dashboard (responsive, two-column on desktop; light/dark)
 - [x] 1.3" OLED UI: start-up sequence, status screen, full-screen flashing danger takeover
-- [x] RGB status LEDs + three actuator outputs (D2/D3/D4) with real-alert triggering
+- [x] Three actuator outputs (D2/D3/D4) with real-alert triggering + self-test
+- [x] External status lamps green/yellow/red (D6/D7/D8) + on-board RGB risk colour
 - [x] Physical stand-down button (D5): 10-min actuator pause, second press re-arms
 - [x] Fallback Wi-Fi access point (`AURA-Sentinel`) for network-less deployments
 - [x] SEN55 health-register decoding + manual fan cleaning
@@ -217,7 +231,7 @@ data/aura.db          — on-device time-series store (created at runtime)
 
 ## Running it
 
-1. Chain the SCD41+SEN55 combo and the OLED on the Qwiic connector; wire the optional buzzer (D2), relay (D3) and stand-down button (D5).
+1. Chain the SCD41+SEN55 combo and the OLED on the Qwiic connector; wire the optional buzzer (D2), relay (D3), stand-down button (D5) and status LEDs (D6/D7/D8) as per the pin table above.
 2. Open the app in Arduino App Lab and press ▶ (first start compiles and flashes the sketch — a few minutes).
 3. Open `http://<board-ip>:7000` — or, with no network around, join Wi-Fi `AURA-Sentinel` (password `aura2026`) and open `http://10.42.0.1:7000`.
 

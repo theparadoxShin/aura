@@ -72,6 +72,24 @@ static const uint8_t PIN_STAND_DOWN = 5;
 static const uint32_t STAND_DOWN_MS = 600000;  // 10 minutes
 static const uint32_t DEBOUNCE_MS = 40;
 
+/*
+ * External status lamps (green / yellow / red), one GPIO each, active HIGH,
+ * wired LED + series resistor (220-330 ohm) to GND. They are indicators, not
+ * actuators: the stand-down button never turns them off, so the danger stays
+ * visible even when the alarm has been hushed.
+ *
+ *   green  steady : air is good (AQHI+ 1-3), system healthy
+ *   yellow blink  : sensors warming up
+ *   yellow steady : caution - AQHI+ 4-6, or the hourly index is still high
+ *                   after an event while the live air has already cleared
+ *   red    steady : high risk (live alert level 1)
+ *   red    blink  : very high risk (live alert level 2)
+ *   all 3  blink  : output self-test running
+ */
+static const uint8_t PIN_LED_GREEN = 6;
+static const uint8_t PIN_LED_YELLOW = 7;
+static const uint8_t PIN_LED_RED = 8;
+
 // Alert levels, pushed from Python from the AQHI+ category.
 static const int ALERT_NONE = 0;
 static const int ALERT_HIGH = 1;       // AQHI+ 7-10
@@ -435,6 +453,36 @@ static void updateOutputs(uint32_t now) {
   digitalWrite(PIN_AUX, aux ? HIGH : LOW);
 }
 
+/*
+ * Drives the three external status lamps. Green/yellow follow the published
+ * hourly AQHI+; red follows the live alert level, because "danger right now"
+ * must react at the speed of the room, not of the hourly mean.
+ */
+static void updateStatusLamps(uint32_t now) {
+  bool green = false;
+  bool yellow = false;
+  bool red = false;
+  bool blink = ((now / 400) % 2) == 0;
+
+  if (now < selfTestUntil) {
+    green = yellow = red = blink;  // lamp test, together with the outputs
+  } else if (alertLevel >= ALERT_VERY_HIGH) {
+    red = blink;
+  } else if (alertLevel == ALERT_HIGH) {
+    red = true;
+  } else if (aqhiValue < 0) {
+    yellow = blink;  // warming up
+  } else if (aqhiValue <= 3) {
+    green = true;
+  } else {
+    yellow = true;  // moderate air, or lingering hourly index after an event
+  }
+
+  digitalWrite(PIN_LED_GREEN, green ? HIGH : LOW);
+  digitalWrite(PIN_LED_YELLOW, yellow ? HIGH : LOW);
+  digitalWrite(PIN_LED_RED, red ? HIGH : LOW);
+}
+
 // Debounced edge detection for the stand-down button; toggles the pause.
 static void pollStandDownButton(uint32_t now) {
   bool down = (digitalRead(PIN_STAND_DOWN) == LOW);
@@ -679,6 +727,15 @@ void setup() {
   digitalWrite(PIN_AUX, LOW);
   pinMode(PIN_STAND_DOWN, INPUT_PULLUP);
 
+  // Status lamps: all on during boot as a visual lamp test, sorted out by the
+  // first updateStatusLamps() once the loop starts.
+  pinMode(PIN_LED_GREEN, OUTPUT);
+  pinMode(PIN_LED_YELLOW, OUTPUT);
+  pinMode(PIN_LED_RED, OUTPUT);
+  digitalWrite(PIN_LED_GREEN, HIGH);
+  digitalWrite(PIN_LED_YELLOW, HIGH);
+  digitalWrite(PIN_LED_RED, HIGH);
+
 #if defined(LEDR) && defined(LEDG) && defined(LEDB)
   pinMode(LEDR, OUTPUT);
   pinMode(LEDG, OUTPUT);
@@ -772,6 +829,7 @@ void loop() {
   if (now - lastOutputUpdate >= OUTPUT_PERIOD_MS) {
     lastOutputUpdate = now;
     updateOutputs(now);
+    updateStatusLamps(now);
   }
 
   if (oledReady && (now - lastOledDraw >= OLED_PERIOD_MS)) {
