@@ -13,6 +13,7 @@ shared buffer below is therefore guarded by `lock`.
 """
 
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -20,6 +21,8 @@ from collections import deque
 from arduino.app_utils import App, Bridge
 from arduino.app_bricks.dbstorage_sqlstore import SQLStore
 from arduino.app_bricks.web_ui import WebUI
+
+from eim_runner import EimRunner, EimError
 
 # ------------------------------------------------------------------ configuration
 
@@ -50,6 +53,14 @@ SAMPLE_PERIOD_S = 10
 RETENTION_DAYS = 30
 RETENTION_SWEEP_S = 3600
 SUMMARY_PERIOD_S = 30  # how often the row counts are re-read from the database
+
+# TinyML classifier (Edge Impulse .eim, runs as a local process on the MPU).
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "edge-ai", "aura_edge_tinyML.eim")
+# Axis order MUST match the value columns selected in the Edge Impulse CSV wizard.
+MODEL_AXES = ("pm1p0", "pm2p5", "pm4p0", "pm10p0", "pm1_pm10_ratio")
+ML_PERIOD_S = 30  # one inference every 30 s: the window only gains 3 samples in that time
+ML_CONFIDENCE = 0.60  # below this the model's opinion is reported but not acted on
+ML_STALE_S = 120
 EXPORT_MAX_ROWS = 20000  # cap on one CSV export, about 55 h at 10 s
 
 # SEN55 device status register bits (SEN5x datasheet, section 6.1.4).
@@ -122,7 +133,14 @@ forecast_state = {"pm25": None, "horizon_s": FORECAST_HORIZON_S, "trend": None, 
 dataset_state = {"label": LABEL_CLEAN, "rows": 0, "written": 0, "oldest": None, "newest": None,
                  "by_label": {}, "error": None}
 pushed = {"index": None, "label": None, "advisory": None, "alert": None, "state_asked": 0.0,
-          "sampled": 0.0, "swept": 0.0, "summarised": 0.0, "live": None}
+          "sampled": 0.0, "swept": 0.0, "summarised": 0.0, "live": None, "classified": 0.0}
+# TinyML state: the runner process, its rolling input window, and the last verdict.
+model = {"runner": None, "error": None}
+ml_window = deque(maxlen=64)  # feature tuples at the 10 s cadence; trimmed at inference
+ml_state = {"available": False, "label": None, "confidence": None, "scores": {},
+            "at": None, "labels": [], "error": None}
+# Physical stand-down button on the MCU: pauses every actuator for a few minutes.
+outputs_paused = {"until": 0.0}
 # Operator-triggered rehearsal of the danger path, so the OLED takeover and the
 # actuator outputs can be shown without waiting for genuinely dangerous air.
 demo = {"level": ALERT_NONE, "until": 0.0}
@@ -185,8 +203,8 @@ def warm_start_window():
     cutoff = int(time.time()) - AQHI_WINDOW_S
     try:
         rows = db.execute_sql(
-            f"SELECT ts, pm2p5 FROM {DB_TABLE} WHERE ts >= {cutoff} AND pm2p5 IS NOT NULL "
-            f"ORDER BY ts ASC"
+            f"SELECT ts, pm1p0, pm2p5, pm4p0, pm10p0 FROM {DB_TABLE} "
+            f"WHERE ts >= {cutoff} AND pm2p5 IS NOT NULL ORDER BY ts ASC"
         ) or []
     except Exception as error:
         log(f"Could not restore the rolling window: {error}")
@@ -197,6 +215,13 @@ def warm_start_window():
         for row in rows:
             pm25_samples.append((float(row["ts"]), float(row["pm2p5"])))
             history.append({"t": int(row["ts"]), "pm25": round(float(row["pm2p5"]), 1)})
+    # Refill the classifier window too, so the first verdict does not have to wait
+    # five minutes after every restart.
+    for row in rows:
+        if all(row.get(k) is not None for k in ("pm1p0", "pm2p5", "pm4p0", "pm10p0")) \
+                and row["pm10p0"]:
+            ml_window.append((row["pm1p0"], row["pm2p5"], row["pm4p0"], row["pm10p0"],
+                              round(row["pm1p0"] / row["pm10p0"], 4)))
     log(f"Restored {len(rows)} samples from the store, index continues across the restart")
 
 
@@ -261,12 +286,20 @@ def store_sample(now):
         "label": dataset_state["label"],
     }
     try:
-        db.store(DB_TABLE, row)
+        # The store cannot type a None value; dropping the key stores a clean NULL
+        # instead (this happens during sensor warm-up, when NOx/VOC read NaN).
+        db.store(DB_TABLE, {k: v for k, v in row.items() if v is not None})
         dataset_state["written"] += 1
         dataset_state["error"] = None
     except Exception as error:
         dataset_state["error"] = str(error)
         log(f"Sample not stored: {error}")
+
+    # The same 10 s cadence feeds the classifier's input window.
+    pm1, pm10 = row["pm1p0"], row["pm10p0"]
+    if all(row.get(k) is not None for k in ("pm1p0", "pm2p5", "pm4p0", "pm10p0")) and pm10:
+        ml_window.append((row["pm1p0"], row["pm2p5"], row["pm4p0"], row["pm10p0"],
+                          round(pm1 / pm10, 4)))
 
 
 def sweep_retention(now):
@@ -276,6 +309,64 @@ def sweep_retention(now):
     except Exception as error:
         dataset_state["error"] = str(error)
     log_dataset_summary()
+
+
+# ------------------------------------------------------------------ TinyML classifier
+
+def init_model():
+    """Start the .eim process. Failure is logged and the advisor stays on rules."""
+    try:
+        runner = EimRunner(MODEL_PATH)
+        if runner.axis_count != len(MODEL_AXES):
+            raise EimError(
+                f"model expects {runner.axis_count} axes, this app feeds {len(MODEL_AXES)}"
+            )
+        model["runner"] = runner
+        ml_state.update(available=True, labels=runner.labels, error=None)
+        log(f"TinyML model loaded: labels {runner.labels}, "
+            f"window {runner.window_sample_count} samples x {runner.axis_count} axes")
+    except (EimError, OSError) as error:
+        model["error"] = str(error)
+        ml_state.update(available=False, error=str(error))
+        log(f"TinyML model unavailable, advisor falls back to rules: {error}")
+
+
+def run_inference():
+    runner = model["runner"]
+    if runner is None:
+        return
+    needed = runner.window_sample_count
+    if len(ml_window) < needed:
+        return
+    window = list(ml_window)[-needed:]
+    features = [value for sample in window for value in sample]  # interleaved by axis
+    try:
+        scores = runner.classify(features)
+    except (EimError, OSError) as error:
+        # One failure is worth logging; the runner is dropped so it cannot spam.
+        ml_state.update(available=False, error=str(error))
+        model["runner"] = None
+        log(f"TinyML inference failed, advisor falls back to rules: {error}")
+        return
+    if not scores:
+        return
+    label = max(scores, key=scores.get)
+    previous = ml_state["label"]
+    ml_state.update(
+        label=label,
+        confidence=round(scores[label], 3),
+        scores={k: round(v, 3) for k, v in scores.items()},
+        at=time.time(),
+        error=None,
+    )
+    if label != previous:
+        pretty = ", ".join(f"{k} {v:.0%}" for k, v in sorted(scores.items()))
+        log(f"TinyML verdict: {label} ({scores[label]:.0%}) [{pretty}]")
+
+
+def ml_fresh():
+    return (ml_state["available"] and ml_state["at"] is not None
+            and time.time() - ml_state["at"] < ML_STALE_S)
 
 
 # ------------------------------------------------------------------ health index
@@ -423,11 +514,11 @@ def update_forecast():
 
 def build_advisory():
     """
-    Deterministic advisory, and the seam where the TinyML classifier plugs in.
+    The advisory: safety rules first, then the TinyML classifier, then defaults.
 
-    TODO(tinyml): replace the rules below with the Edge Impulse model's output
-    (smoke-event classification over a window of PM2.5/VOC/CO2). The contract is
-    the same: return (text, source) where source labels who produced the text.
+    The hard safety conditions stay rule-based on purpose - a health warning must
+    never depend on a model being right. The classifier's job is the part rules
+    cannot do: telling a wildfire-smoke signature from harmless cooking aerosols.
     """
     recent, _ = pm25_mean(TREND_RECENT_S)
     base, base_span = pm25_mean(TREND_BASE_S)
@@ -437,8 +528,12 @@ def build_advisory():
     if recent is None:
         return "Warming up sensors", "rules"
 
-    # A fast climb matters more than the absolute level: it is the early warning.
+    # Safety layer: these fire regardless of what the model thinks.
     if base is not None and base_span > 120 and recent > base + 5 and recent > base * 1.3:
+        if ml_fresh() and ml_state["label"] == "cooking" \
+                and ml_state["confidence"] >= ML_CONFIDENCE:
+            return (f"Particles rising - model says cooking "
+                    f"({ml_state['confidence']:.0%}), ventilate while cooking", "tinyml")
         return "PM2.5 rising fast - possible smoke event, close windows", "rules"
 
     if value is not None and value >= 7:
@@ -448,6 +543,17 @@ def build_advisory():
     if co2 is not None and co2 > 1200:
         return f"CO2 {co2} ppm - ventilate the room", "rules"
 
+    # Model layer: the aerosol-signature verdict.
+    if ml_fresh() and ml_state["confidence"] is not None \
+            and ml_state["confidence"] >= ML_CONFIDENCE:
+        label = ml_state["label"]
+        if label == "smoke" and recent > 15:
+            return (f"Smoke signature detected ({ml_state['confidence']:.0%}) "
+                    f"- close windows", "tinyml")
+        if label == "cooking" and recent > 15:
+            return (f"Cooking aerosols detected ({ml_state['confidence']:.0%}) "
+                    f"- ventilate the kitchen", "tinyml")
+
     if forecast_state["trend"] == "rising" and forecast_state["pm25"] is not None \
             and forecast_state["pm25"] > max(35.0, recent * 1.5):
         return (f"PM2.5 trending to {forecast_state['pm25']:.0f} ug/m3 within 15 min", "rules")
@@ -456,6 +562,9 @@ def build_advisory():
         return "Air improving, PM2.5 falling", "rules"
 
     if value is not None and value <= 3:
+        if ml_fresh() and ml_state["label"] == "clean" \
+                and ml_state["confidence"] >= ML_CONFIDENCE:
+            return "Air quality is good - confirmed by the on-device model", "tinyml"
         return "Air quality is good", "rules"
 
     return "Air quality is moderate, stable", "rules"
@@ -540,6 +649,16 @@ def on_log(message):
     log(f"[MCU] {message}")
 
 
+def on_outputs_paused(seconds):
+    """The physical stand-down button was pressed (or the pause expired)."""
+    seconds = max(0, int(seconds))
+    outputs_paused["until"] = time.time() + seconds
+    if seconds > 0:
+        log(f"Stand-down button pressed: actuators paused for {seconds // 60} min")
+    else:
+        log("Stand-down cancelled: actuators re-armed")
+
+
 # ------------------------------------------------------------------ HTTP API
 
 def get_data():
@@ -558,6 +677,8 @@ def get_data():
         "alert_simulated": time.time() < demo["until"],
         "alarm_muted": time.time() < mute["until"],
         "mute_seconds_left": max(0, int(mute["until"] - time.time())),
+        "outputs_paused_s": max(0, int(outputs_paused["until"] - time.time())),
+        "ml": ml_state,
         "dataset": dataset_state,
         "sen55": latest["sen55"],
         "scd41": latest["scd41"],
@@ -750,6 +871,10 @@ def ui_loop():
         pushed["sampled"] = now
         store_sample(now)
 
+    if now - pushed["classified"] >= ML_PERIOD_S:
+        pushed["classified"] = now
+        run_inference()
+
     if now - pushed["summarised"] >= SUMMARY_PERIOD_S:
         pushed["summarised"] = now
         refresh_dataset_summary()
@@ -765,6 +890,7 @@ Bridge.provide("log", on_log)
 Bridge.provide("sen55_data", on_sen55_data)
 Bridge.provide("scd41_data", on_scd41_data)
 Bridge.provide("sensor_status", on_sensor_status)
+Bridge.provide("outputs_paused", on_outputs_paused)
 
 # The dashboard probes both paths, so the mount point of the brick does not matter.
 ui.expose_api("GET", "/data", get_data)
@@ -779,6 +905,7 @@ ui.expose_api("POST", "/label", set_label)
 ui.expose_api("POST", "/relabel", relabel)
 
 init_database()
+init_model()
 log("AURA started - dashboard on port 7000, all processing on-device")
 
 App.run(user_loop=ui_loop)

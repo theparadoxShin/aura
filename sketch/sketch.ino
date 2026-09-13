@@ -61,6 +61,17 @@ static const uint8_t PIN_ALARM = 2;
 static const uint8_t PIN_RELAY = 3;
 static const uint8_t PIN_AUX = 4;
 
+/*
+ * Stand-down push button (momentary, wired between D5 and GND, internal pull-up).
+ * One press pauses every actuator for STAND_DOWN_MS - the escape hatch when the
+ * alarm is going off over a burnt toast. A second press re-arms immediately. The
+ * OLED keeps showing the danger while paused: the button silences the outputs,
+ * never the information.
+ */
+static const uint8_t PIN_STAND_DOWN = 5;
+static const uint32_t STAND_DOWN_MS = 600000;  // 10 minutes
+static const uint32_t DEBOUNCE_MS = 40;
+
 // Alert levels, pushed from Python from the AQHI+ category.
 static const int ALERT_NONE = 0;
 static const int ALERT_HIGH = 1;       // AQHI+ 7-10
@@ -126,6 +137,9 @@ static char alertMessage[48] = "";
 static uint32_t lastOutputUpdate = 0;
 static uint32_t selfTestUntil = 0;
 static bool alarmMuted = false;  // hush button: silences the buzzer only
+static uint32_t standDownUntil = 0;  // physical button: pauses ALL actuators
+static bool buttonWasDown = false;
+static uint32_t buttonChangedAt = 0;
 
 // ---------------------------------------------------------------- logging helpers
 
@@ -267,7 +281,13 @@ static void drawAlertScreen(uint32_t now) {
 
   oled.setFont(QW_FONT_5X7);
   drawCenteredColor(40, aqhiLabel, 6, ink);
-  if (alertMessage[0] != '\0') {
+  if (now < standDownUntil) {
+    // The danger stays on screen; only the outputs are resting.
+    char paused[24];
+    snprintf(paused, sizeof(paused), "OUTPUTS PAUSED %lu MIN",
+             (unsigned long)((standDownUntil - now) / 60000UL + 1));
+    drawCenteredColor(54, paused, 6, ink);
+  } else if (alertMessage[0] != '\0') {
     drawCenteredColor(54, alertMessage, 6, ink);
   }
 
@@ -383,6 +403,15 @@ static void updateOutputs(uint32_t now) {
   bool relay = false;
   bool aux = false;
 
+  // Stand-down beats everything except the wiring self-test: the user asked for
+  // quiet, they get quiet - the OLED and the dashboard still show the danger.
+  if (now < standDownUntil && now >= selfTestUntil) {
+    digitalWrite(PIN_ALARM, LOW);
+    digitalWrite(PIN_RELAY, LOW);
+    digitalWrite(PIN_AUX, LOW);
+    return;
+  }
+
   if (now < selfTestUntil) {
     // Self-test: pulse all three lines together at 2 Hz so wiring is easy to check.
     alarm = relay = aux = (((now / 250) % 2) == 0);
@@ -404,6 +433,26 @@ static void updateOutputs(uint32_t now) {
   digitalWrite(PIN_ALARM, alarm ? HIGH : LOW);
   digitalWrite(PIN_RELAY, relay ? HIGH : LOW);
   digitalWrite(PIN_AUX, aux ? HIGH : LOW);
+}
+
+// Debounced edge detection for the stand-down button; toggles the pause.
+static void pollStandDownButton(uint32_t now) {
+  bool down = (digitalRead(PIN_STAND_DOWN) == LOW);
+  if (down != buttonWasDown && (now - buttonChangedAt) > DEBOUNCE_MS) {
+    buttonChangedAt = now;
+    buttonWasDown = down;
+    if (down) {  // act on press, not release
+      if (now < standDownUntil) {
+        standDownUntil = 0;
+        logLine("Stand-down button: actuators re-armed");
+        Bridge.notify("outputs_paused", 0);
+      } else {
+        standDownUntil = now + STAND_DOWN_MS;
+        logLine("Stand-down button: actuators paused for 10 min");
+        Bridge.notify("outputs_paused", (int)(STAND_DOWN_MS / 1000));
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------- initialisation
@@ -628,6 +677,7 @@ void setup() {
   digitalWrite(PIN_ALARM, LOW);
   digitalWrite(PIN_RELAY, LOW);
   digitalWrite(PIN_AUX, LOW);
+  pinMode(PIN_STAND_DOWN, INPUT_PULLUP);
 
 #if defined(LEDR) && defined(LEDG) && defined(LEDB)
   pinMode(LEDR, OUTPUT);
@@ -716,6 +766,8 @@ void loop() {
     lastStatusRead = now;
     reportSensorStatus(false);
   }
+
+  pollStandDownButton(now);
 
   if (now - lastOutputUpdate >= OUTPUT_PERIOD_MS) {
     lastOutputUpdate = now;

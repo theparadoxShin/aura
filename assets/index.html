@@ -36,12 +36,19 @@
   * { box-sizing: border-box; }
   body {
     margin: 0 auto;
-    max-width: 900px;
+    max-width: 1160px;
     background: var(--page);
     color: var(--ink);
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
     padding: 16px;
   }
+  /* One column on phones; two side-by-side columns on desktop. */
+  .layout { margin-top: 12px; display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 980px) {
+    .layout { grid-template-columns: 1fr 1fr; align-items: start; }
+  }
+  .col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .col > * { margin-top: 0 !important; }
   header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
   h1 { font-size: 1.1rem; margin: 0; font-weight: 650; letter-spacing: 0.04em; }
   .tagline { font-size: 0.78rem; color: var(--muted); }
@@ -181,6 +188,9 @@
     </button>
   </div>
 
+  <div class="layout">
+  <div class="col">
+
   <!-- Health index: the one hero figure of the view -->
   <div class="card">
     <h2>AQHI+ — smoke-adjusted health index</h2>
@@ -208,6 +218,7 @@
         <div class="text" id="advisory">…</div>
         <div class="source" id="advisory-source"></div>
         <div class="source" id="forecast"></div>
+        <div class="source" id="ml-line"></div>
       </div>
     </div>
   </div>
@@ -222,6 +233,9 @@
     <div class="tile"><div class="label">Temperature</div><div class="value" id="temp">–</div></div>
     <div class="tile"><div class="label">Humidity</div><div class="value" id="hum">–</div></div>
   </div>
+
+  </div><!-- /col -->
+  <div class="col">
 
   <div class="card">
     <h2>PM2.5 — recent history</h2>
@@ -266,7 +280,10 @@
     </div>
   </div>
 
-  <div class="card">
+  </div><!-- /col -->
+  </div><!-- /layout -->
+
+  <div class="card" style="margin-top:12px">
     <h2>Logs</h2>
     <pre id="log">Waiting for data…</pre>
   </div>
@@ -451,10 +468,13 @@
           d.alert >= 2 ? '✖ DANGER — VERY HIGH RISK' : '⚠ DANGER — HIGH RISK';
         document.getElementById('alarm-sub').textContent =
           (d.alert >= 2 ? 'Stay indoors and close windows. ' : 'Limit outdoor exertion. ')
-          + (d.alarm_muted
-              ? 'Buzzer silenced for ' + Math.ceil((d.mute_seconds_left || 0) / 60)
-                + ' min; purifier output still active.'
-              : 'Alarm and purifier outputs are active.')
+          + (d.outputs_paused_s > 0
+              ? 'All actuators paused ' + Math.ceil(d.outputs_paused_s / 60)
+                + ' min (stand-down button).'
+              : d.alarm_muted
+                ? 'Buzzer silenced for ' + Math.ceil((d.mute_seconds_left || 0) / 60)
+                  + ' min; purifier output still active.'
+                : 'Alarm and purifier outputs are active.')
           + (d.alert_simulated ? ' (rehearsal — not a real measurement)' : '');
         document.getElementById('silence').textContent =
           d.alarm_muted ? 'Un-silence buzzer' : 'Silence buzzer 15 min';
@@ -466,7 +486,25 @@
       const adv = d.advisory || {};
       document.getElementById('advisory').textContent = adv.text || '…';
       document.getElementById('advisory-source').textContent =
-        adv.source === 'tinyml' ? 'TinyML model' : 'Deterministic rules — TinyML model in training';
+        adv.source === 'tinyml' ? 'TinyML model (on-device)' : 'Deterministic safety rules';
+
+      // TinyML classifier
+      const ml = d.ml || {};
+      let mlText;
+      if (ml.available && ml.label) {
+        mlText = 'On-device model: ' + ml.label + ' (' + Math.round((ml.confidence || 0) * 100) +
+          '%)' + (ml.scores ? ' — ' + Object.entries(ml.scores)
+            .map(([k, v]) => k + ' ' + Math.round(v * 100) + '%').join(' · ') : '');
+      } else if (ml.available) {
+        mlText = 'On-device model: loaded, filling its 5-minute window…';
+      } else {
+        mlText = 'On-device model: unavailable (' + (ml.error || 'not loaded') + ')';
+      }
+      if (d.outputs_paused_s > 0) {
+        mlText += ' · Actuators paused ' + Math.ceil(d.outputs_paused_s / 60) +
+          ' min (stand-down button)';
+      }
+      document.getElementById('ml-line').textContent = mlText;
 
       // Forecast
       const fc = d.forecast || {};
